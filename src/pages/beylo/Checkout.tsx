@@ -14,13 +14,14 @@ import {
 import { Badge, Button, Card, CopyButton, Money } from '@/components/beylo/primitives';
 import QRCode from '@/components/beylo/QRCode';
 import { paymentProvider, CHECKOUT_STAGES } from '@/lib/beylo/provider';
-import { CryptoAsset, PaymentInstructions, Quote } from '@/lib/beylo/types';
+import { getPayment, setPaymentStatus, updatePayment, savePayment } from '@/lib/beylo/ledger';
+import { CryptoAsset, Payment, PaymentInstructions, Quote } from '@/lib/beylo/types';
 import { CHECKOUT_DEMO } from '@/data/beylo';
 import { gbp, crypto as fmtCrypto, dateLong, truncateMiddle, num } from '@/lib/beylo/format';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Clock, Download, Loader2, RefreshCw, ShieldCheck, XOctagon } from 'lucide-react';
 import { toast } from 'sonner';
 
-type Step = 'select' | 'quote' | 'instructions' | 'success' | 'expired' | 'failed';
+type Step = 'select' | 'quote' | 'instructions' | 'success' | 'expired' | 'failed' | 'missing';
 
 const QUOTE_SECONDS = 600;
 const FAIL_REASONS = ['Insufficient Amount', 'Unsupported Network', 'Quote Expired', 'Provider Error'];
@@ -30,12 +31,28 @@ const Checkout: React.FC = () => {
   const [params] = useSearchParams();
   const navigate = useNavigate();
 
-  const paymentId = id ?? CHECKOUT_DEMO.paymentId;
-  const gbpAmount = Number(params.get('amount')) || CHECKOUT_DEMO.gbpAmount;
-  const reference = params.get('ref') ?? CHECKOUT_DEMO.reference;
-  const description = params.get('desc') ?? CHECKOUT_DEMO.description;
+  const [session, setSession] = React.useState<Payment | null>(() =>
+    id ? getPayment(id) ?? null : null,
+  );
 
-  const [step, setStep] = React.useState<Step>('select');
+  // Prefer ledger / seed payment; fall back to query params or the static demo checkout.
+  const paymentId = session?.paymentId ?? id ?? CHECKOUT_DEMO.paymentId;
+  const amountParam = Number(params.get('amount'));
+  const gbpAmount = session?.gbpAmount ?? (amountParam > 0 ? amountParam : CHECKOUT_DEMO.gbpAmount);
+  const reference = session?.reference ?? params.get('ref') ?? CHECKOUT_DEMO.reference;
+  const description = session?.description ?? params.get('desc') ?? CHECKOUT_DEMO.description;
+  const merchantName = session?.merchantName ?? CHECKOUT_DEMO.merchantName;
+
+  const [step, setStep] = React.useState<Step>(() => {
+    if (id) {
+      const existing = getPayment(id);
+      if (!existing && !params.get('amount')) return 'missing';
+      if (existing?.status === 'completed' || existing?.status === 'confirmed') return 'success';
+      if (existing?.status === 'expired') return 'expired';
+      if (existing?.status === 'failed' || existing?.status === 'cancelled') return 'failed';
+    }
+    return 'select';
+  });
   const [assets, setAssets] = React.useState<CryptoAsset[]>([]);
   const [loadingAssets, setLoadingAssets] = React.useState(true);
   const [selected, setSelected] = React.useState<CryptoAsset | null>(null);
@@ -46,6 +63,36 @@ const Checkout: React.FC = () => {
   const [stageIndex, setStageIndex] = React.useState(0);
   const [completedAt, setCompletedAt] = React.useState<string | null>(null);
   const [failReason, setFailReason] = React.useState(FAIL_REASONS[0]);
+
+  React.useEffect(() => {
+    if (id) {
+      const found = getPayment(id);
+      setSession(found ?? null);
+      if (!found && !params.get('amount')) setStep('missing');
+      return;
+    }
+    // Seed the static demo checkout into the ledger so status updates persist.
+    const existing = getPayment(CHECKOUT_DEMO.paymentId);
+    if (!existing) {
+      savePayment({
+        paymentId: CHECKOUT_DEMO.paymentId,
+        providerPaymentId: 'provider_demo_checkout',
+        merchantId: 'MER-10428',
+        merchantName: CHECKOUT_DEMO.merchantName,
+        createdAt: new Date().toISOString(),
+        reference: CHECKOUT_DEMO.reference,
+        description: CHECKOUT_DEMO.description,
+        gbpAmount: CHECKOUT_DEMO.gbpAmount,
+        status: 'awaiting_payment',
+        settlementStatus: 'not_started',
+        settlementCurrency: 'GBP',
+        createdBy: 'Demo Checkout',
+        expiryMinutes: 60,
+        timeline: [{ label: 'Payment Created', timestamp: new Date().toISOString(), detail: 'Public demo checkout' }],
+      });
+    }
+    setSession(getPayment(CHECKOUT_DEMO.paymentId) ?? null);
+  }, [id, params]);
 
   React.useEffect(() => {
     let live = true;
@@ -63,6 +110,7 @@ const Checkout: React.FC = () => {
       setSecondsLeft((s) => {
         if (s <= 1) {
           window.clearInterval(t);
+          setPaymentStatus(paymentId, 'expired', {}, 'Quote / payment window expired');
           setStep('expired');
           return 0;
         }
@@ -70,35 +118,69 @@ const Checkout: React.FC = () => {
       });
     }, 1000);
     return () => window.clearInterval(t);
-  }, [step]);
+  }, [step, paymentId]);
 
   // Simulated provider webhook/polling driven status progression.
   React.useEffect(() => {
-    if (step !== 'instructions') return;
+    if (step !== 'instructions' || !quote) return;
     const timers: number[] = [];
-    timers.push(window.setTimeout(() => setStageIndex(1), 7000));
-    timers.push(window.setTimeout(() => setStageIndex(2), 12000));
-    timers.push(window.setTimeout(() => setStageIndex(3), 18000));
-    timers.push(window.setTimeout(() => setStageIndex(4), 23000));
+    timers.push(window.setTimeout(() => {
+      setStageIndex(1);
+      setPaymentStatus(paymentId, 'payment_detected', {}, 'Mempool detection via provider');
+    }, 7000));
+    timers.push(window.setTimeout(() => {
+      setStageIndex(2);
+      setPaymentStatus(paymentId, 'confirming', {}, 'Awaiting network confirmations');
+    }, 12000));
+    timers.push(window.setTimeout(() => {
+      setStageIndex(3);
+      setPaymentStatus(paymentId, 'confirmed', {
+        asset: quote.asset,
+        network: quote.networkLabel,
+        cryptoAmount: quote.cryptoAmount,
+        exchangeRate: quote.exchangeRate,
+      }, 'Provider webhook payment.confirmed');
+    }, 18000));
+    timers.push(window.setTimeout(() => {
+      setStageIndex(4);
+      setPaymentStatus(paymentId, 'completed', {
+        settlementStatus: 'conversion_processing',
+      }, `${quote.asset} → GBP conversion initiated`);
+    }, 23000));
     timers.push(
       window.setTimeout(() => {
         setStageIndex(5);
-        setCompletedAt(new Date().toISOString());
+        const doneAt = new Date().toISOString();
+        setCompletedAt(doneAt);
+        updatePayment(paymentId, {
+          status: 'completed',
+          settlementStatus: 'settlement_pending',
+          asset: quote.asset,
+          network: quote.networkLabel,
+          cryptoAmount: quote.cryptoAmount,
+          exchangeRate: quote.exchangeRate,
+        }, { label: 'Settlement Initiated', timestamp: doneAt, detail: 'Queued for next GBP settlement batch' });
+        setSession(getPayment(paymentId) ?? null);
         setStep('success');
       }, 28000),
     );
     return () => timers.forEach((t) => window.clearTimeout(t));
-  }, [step]);
+  }, [step, paymentId, quote]);
 
   const requestQuote = async (asset: CryptoAsset) => {
     setQuoting(true);
     try {
-      const q = await paymentProvider.createQuote(paymentId, gbpAmount, asset.asset);
+      const q = await paymentProvider.createQuote(paymentId, gbpAmount, asset.asset, asset.network);
       setQuote({ ...q, network: asset.network, networkLabel: asset.networkLabel });
+      updatePayment(paymentId, {
+        asset: asset.asset,
+        network: asset.networkLabel,
+      }, { label: 'Quote Generated', timestamp: new Date().toISOString(), detail: `${q.quoteId} · locked for 10:00` });
       setSecondsLeft(QUOTE_SECONDS);
       setStep('quote');
     } catch {
       setFailReason('Provider Error');
+      setPaymentStatus(paymentId, 'failed', {}, 'Provider Error');
       setStep('failed');
     } finally {
       setQuoting(false);
@@ -115,6 +197,7 @@ const Checkout: React.FC = () => {
       setStep('instructions');
     } catch {
       setFailReason('Provider Error');
+      setPaymentStatus(paymentId, 'failed', {}, 'Provider Error');
       setStep('failed');
     } finally {
       setQuoting(false);
@@ -127,10 +210,31 @@ const Checkout: React.FC = () => {
     setInstructions(null);
     setStageIndex(0);
     setSecondsLeft(QUOTE_SECONDS);
+    setPaymentStatus(paymentId, 'awaiting_payment', {}, 'New quote requested');
   };
 
+  if (step === 'missing') {
+    return (
+      <CheckoutPageShell>
+        <div className="mx-auto max-w-xl text-center">
+          <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-finerror-soft">
+            <XOctagon className="h-8 w-8 text-finerror" />
+          </span>
+          <h1 className="mt-5 text-[24px] font-semibold text-navy-900">Payment not found</h1>
+          <p className="mx-auto mt-2 max-w-md text-[13.5px] leading-relaxed text-navy-400">
+            No payment session matches <span className="font-mono text-navy-700">{id}</span>. Ask your merchant for a fresh payment link.
+          </p>
+        </div>
+      </CheckoutPageShell>
+    );
+  }
+
   /* ------------------------------ Success ------------------------------ */
-  if (step === 'success' && quote) {
+  if (step === 'success') {
+    const paidAsset = quote?.asset ?? session?.asset;
+    const paidAmount = quote?.cryptoAmount ?? session?.cryptoAmount;
+    const paidRate = quote?.exchangeRate ?? session?.exchangeRate;
+    const paidNetwork = quote?.networkLabel ?? session?.network;
     return (
       <CheckoutPageShell>
         <div className="mx-auto max-w-xl text-center">
@@ -139,15 +243,17 @@ const Checkout: React.FC = () => {
           </span>
           <h1 className="mt-5 text-[24px] font-semibold text-navy-900">Payment Successful</h1>
           <div className="mt-3"><Money size="xl">{gbp(gbpAmount)}</Money> <span className="text-[13px] font-medium text-navy-400">GBP</span></div>
-          <p className="mt-2 text-[13.5px] text-navy-400">Paid using {fmtCrypto(quote.cryptoAmount, quote.asset)}</p>
+          <p className="mt-2 text-[13.5px] text-navy-400">
+            {paidAsset && paidAmount ? `Paid using ${fmtCrypto(paidAmount, paidAsset)}` : 'Paid and queued for GBP settlement'}
+          </p>
 
           <Card className="mt-6 text-left">
             <div className="divide-y divide-line px-5">
-              <QuoteRow label="Merchant" value={CHECKOUT_DEMO.merchantName} />
+              <QuoteRow label="Merchant" value={merchantName} />
               <QuoteRow label="Reference" value={reference} />
               <QuoteRow label="Payment ID" value={<span className="font-mono text-[13px]">{paymentId}</span>} />
-              <QuoteRow label="Network" value={quote.networkLabel} />
-              <QuoteRow label="Exchange rate" value={rateLine(quote.asset, quote.exchangeRate)} />
+              <QuoteRow label="Network" value={paidNetwork ?? '—'} />
+              <QuoteRow label="Exchange rate" value={paidAsset && paidRate ? rateLine(paidAsset, paidRate) : '—'} />
               <QuoteRow label="Completed" value={completedAt ? `${dateLong(completedAt)}, ${new Date(completedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : '—'} />
             </div>
           </Card>
@@ -279,7 +385,11 @@ const Checkout: React.FC = () => {
 
           <div className="flex flex-wrap justify-between gap-2">
             <Button variant="ghost" onClick={restart}><ArrowLeft className="h-4 w-4" /> Choose another asset</Button>
-            <Button variant="outline" onClick={() => { setFailReason('Insufficient Amount'); setStep('failed'); }}>
+            <Button variant="outline" onClick={() => {
+              setFailReason('Insufficient Amount');
+              setPaymentStatus(paymentId, 'failed', {}, 'Insufficient Amount');
+              setStep('failed');
+            }}>
               <AlertTriangle className="h-4 w-4" /> Report a problem
             </Button>
           </div>
@@ -334,7 +444,7 @@ const Checkout: React.FC = () => {
     <CheckoutPageShell>
       <div className="space-y-5">
         <MerchantSummary
-          merchantName={CHECKOUT_DEMO.merchantName}
+          merchantName={merchantName}
           reference={reference}
           description={description}
           gbpAmount={gbpAmount}

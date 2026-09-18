@@ -97,7 +97,7 @@ export const AppShell: React.FC<{
   const [profileOpen, setProfileOpen] = React.useState(false);
   const [notifOpen, setNotifOpen] = React.useState(false);
   const navigate = useNavigate();
-  const { profile, displayName, initials, role, isPlatformAdmin, can, signOut } = useAuth();
+  const { profile, displayName, initials, role, isPlatformAdmin, isDemoAccount, can, signOut } = useAuth();
 
   // Sidebar is driven by the signed-in member's role permissions.
   const nav = variant === 'admin' ? ADMIN_NAV : MERCHANT_NAV.filter((i) => !i.permission || can(i.permission));
@@ -215,7 +215,7 @@ export const AppShell: React.FC<{
                   <p className="truncate text-[13px] font-semibold text-navy-900">{displayName}</p>
                   <p className="truncate text-[12px] text-navy-400">{profile?.email}</p>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    <Badge tone="gold">{isPlatformAdmin ? 'Platform Administrator' : role ?? 'Member'}</Badge>
+                    <Badge tone="gold">{isDemoAccount ? 'Demo · Full Access' : isPlatformAdmin ? 'Platform Administrator' : role ?? 'Member'}</Badge>
                     {profile?.status && profile.status !== 'Active' && <Badge tone="warn">{profile.status}</Badge>}
                   </div>
                 </div>

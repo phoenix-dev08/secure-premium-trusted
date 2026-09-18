@@ -1,9 +1,11 @@
 import React from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { BeyloLogo, Button, Card, Input, Label, Badge } from '@/components/beylo/primitives';
-import { useAuth } from '@/contexts/AuthContext';
-import { ArrowLeft, KeyRound, Loader2, Lock, Mail, ShieldCheck, Smartphone, CheckCircle2, UserPlus } from 'lucide-react';
+import { readOnboardingDraft, useAuth } from '@/contexts/AuthContext';
+import { DEMO_ACCOUNT } from '@/lib/beylo/demo';
+import { ArrowLeft, KeyRound, Loader2, Lock, Mail, ShieldCheck, Smartphone, CheckCircle2, UserPlus, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
+import { supabase } from '@/lib/supabase';
 
 const HERO_IMAGE = 'https://d64gsuwffb70l.cloudfront.net/6aace01560554da1d744b64f_1789714546592_22417a94.jpg';
 
@@ -54,21 +56,65 @@ const rememberedEmail = (): string => {
 export const SignIn: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { signIn, signUp, userId, loading } = useAuth();
-  const [mode, setMode] = React.useState<'signin' | 'register'>('signin');
-  const [email, setEmail] = React.useState(rememberedEmail());
+  const [params] = useSearchParams();
+  const { signIn, signUp, enterDemo, userId, loading, needsTwoFactor } = useAuth();
+
+  const draft = React.useMemo(() => readOnboardingDraft(), []);
+  const preferRegister = params.get('mode') === 'register' || Boolean(draft?.email && params.get('from') === 'onboarding');
+
+  const [mode, setMode] = React.useState<'signin' | 'register'>(preferRegister ? 'register' : 'signin');
+  const [email, setEmail] = React.useState(draft?.email || rememberedEmail());
   const [password, setPassword] = React.useState('');
-  const [firstName, setFirstName] = React.useState('');
-  const [lastName, setLastName] = React.useState('');
+  const [firstName, setFirstName] = React.useState(draft?.firstName || '');
+  const [lastName, setLastName] = React.useState(draft?.lastName || '');
   const [remember, setRemember] = React.useState(Boolean(rememberedEmail()));
   const [busy, setBusy] = React.useState(false);
+  const [demoBusy, setDemoBusy] = React.useState(false);
   const [error, setError] = React.useState('');
 
   const redirectTo = (location.state as { from?: string } | null)?.from ?? '/dashboard';
 
   React.useEffect(() => {
-    if (!loading && userId) navigate(redirectTo, { replace: true });
-  }, [loading, userId, navigate, redirectTo]);
+    if (loading) return;
+    if (userId && needsTwoFactor) {
+      navigate('/2fa', { replace: true, state: { from: redirectTo } });
+      return;
+    }
+    if (userId && !needsTwoFactor) navigate(redirectTo, { replace: true });
+  }, [loading, userId, needsTwoFactor, navigate, redirectTo]);
+
+  const autoDemoStarted = React.useRef(false);
+  React.useEffect(() => {
+    if (autoDemoStarted.current || loading || userId) return;
+    if (params.get('demo') !== '1') return;
+    autoDemoStarted.current = true;
+    void (async () => {
+      setDemoBusy(true);
+      const result = await enterDemo();
+      setDemoBusy(false);
+      if (result.error) { setError(result.error); return; }
+      toast.success('Signed in as demo owner — full access');
+      navigate('/dashboard', { replace: true });
+    })();
+  }, [loading, userId, params, enterDemo, navigate]);
+
+  const fillDemo = () => {
+    setMode('signin');
+    setEmail(DEMO_ACCOUNT.email);
+    setPassword(DEMO_ACCOUNT.password);
+    setError('');
+  };
+
+  const useDemo = async () => {
+    setError('');
+    setDemoBusy(true);
+    fillDemo();
+    const result = await enterDemo();
+    setDemoBusy(false);
+    if (result.error) { setError(result.error); return; }
+    toast.success('Signed in as demo owner — full access');
+    navigate('/dashboard', { replace: true });
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,14 +124,40 @@ export const SignIn: React.FC = () => {
 
     setError('');
     setBusy(true);
-    const result =
-      mode === 'signin'
-        ? await signIn(email, password, remember)
-        : await signUp({ email, password, firstName, lastName });
+
+    if (mode === 'signin') {
+      const result = await signIn(email, password, remember);
+      setBusy(false);
+      if (result.error) { setError(result.error); return; }
+      if (result.needsTwoFactor) {
+        toast.success('Enter your authenticator code');
+        navigate('/2fa', { replace: true, state: { from: redirectTo } });
+        return;
+      }
+      toast.success('Signed in securely');
+      navigate(redirectTo, { replace: true });
+      return;
+    }
+
+    const merchantName = draft?.tradingName || draft?.legalName || undefined;
+    const result = await signUp({
+      email,
+      password,
+      firstName,
+      lastName,
+      jobTitle: draft?.jobTitle,
+      phone: draft?.phone,
+      merchantName,
+    });
     setBusy(false);
 
     if (result.error) { setError(result.error); return; }
-    toast.success(mode === 'signin' ? 'Signed in securely' : 'Merchant account created');
+    if (result.needsEmailVerification) {
+      toast.success('Check your inbox to verify your email');
+      navigate(`/verify-email?email=${encodeURIComponent(email.trim())}`, { replace: true });
+      return;
+    }
+    toast.success('Merchant account created');
     navigate(redirectTo, { replace: true });
   };
 
@@ -94,7 +166,11 @@ export const SignIn: React.FC = () => {
       <h1 className="text-[24px] font-semibold text-navy-900">
         {mode === 'signin' ? 'Sign in to BEYLO' : 'Create your BEYLO login'}
       </h1>
-      <p className="mt-1.5 text-[13.5px] text-navy-400">Secure payments for high-value commerce.</p>
+      <p className="mt-1.5 text-[13.5px] text-navy-400">
+        {draft && mode === 'register'
+          ? `Finish setting up access for ${draft.tradingName || draft.legalName || 'your merchant application'}.`
+          : 'Secure payments for high-value commerce.'}
+      </p>
 
       <form onSubmit={submit} className="mt-6 space-y-4">
         {mode === 'register' && (
@@ -132,11 +208,40 @@ export const SignIn: React.FC = () => {
           </div>
         )}
 
-        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy}>
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy || demoBusy}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : mode === 'signin' ? <Lock className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
           {mode === 'signin' ? 'Sign In' : 'Create account'}
         </Button>
       </form>
+
+      {mode === 'signin' && (
+        <Card className="mt-5 border-gold-500/30 bg-gold-100/50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="flex items-center gap-1.5 text-[12.5px] font-semibold text-navy-900">
+                <Sparkles className="h-3.5 w-3.5 text-gold-600" /> Demo account
+              </p>
+              <p className="mt-1 text-[12px] leading-relaxed text-navy-500">
+                Full merchant owner + platform admin access — create payments, checkout, settlements and admin.
+              </p>
+            </div>
+            <Badge tone="gold">Sandbox</Badge>
+          </div>
+          <dl className="mt-3 space-y-1.5 rounded-md border border-line bg-white px-3 py-2.5 font-mono text-[12px] text-navy-800">
+            <div className="flex justify-between gap-3"><dt className="text-navy-400">Email</dt><dd>{DEMO_ACCOUNT.email}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-navy-400">Password</dt><dd>{DEMO_ACCOUNT.password}</dd></div>
+          </dl>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <Button type="button" variant="gold" className="w-full" disabled={busy || demoBusy} onClick={useDemo}>
+              {demoBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              Enter demo account
+            </Button>
+            <Button type="button" variant="outline" className="w-full sm:w-auto" disabled={busy || demoBusy} onClick={fillDemo}>
+              Fill fields
+            </Button>
+          </div>
+        </Card>
+      )}
 
       <button
         type="button"
@@ -224,39 +329,48 @@ export const ForgotPassword: React.FC = () => {
 
 export const ResetPassword: React.FC = () => {
   const navigate = useNavigate();
-  const { updatePassword, userId } = useAuth();
+  const { updatePassword, userId, passwordRecovery, loading, clearPasswordRecovery } = useAuth();
   const [pw, setPw] = React.useState('');
   const [pw2, setPw2] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const strength = pw.length >= 14 ? 'Strong' : pw.length >= 10 ? 'Good' : pw.length > 0 ? 'Weak' : '';
 
+  const authorised = Boolean(userId) && (passwordRecovery || Boolean(userId));
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!userId) {
+      toast.error('Open this page from the emailed reset link so the request can be authorised.');
+      return;
+    }
     if (pw.length < 8) { toast.error('Password must be at least 8 characters'); return; }
     if (pw !== pw2) { toast.error('Passwords do not match'); return; }
     setBusy(true);
     const { error } = await updatePassword(pw);
     setBusy(false);
     if (error) { toast.error(error); return; }
+    clearPasswordRecovery();
     toast.success('Password updated');
-    navigate(userId ? '/dashboard' : '/signin', { replace: true });
+    navigate(passwordRecovery ? '/signin' : '/dashboard', { replace: true });
   };
 
   return (
     <AuthShell>
       <h1 className="text-[24px] font-semibold text-navy-900">Set a new password</h1>
       <p className="mt-1.5 text-[13.5px] text-navy-400">
-        {userId
-          ? 'Choose a strong password you don’t use elsewhere.'
-          : 'Open this page from the emailed reset link so the request can be authorised.'}
+        {loading
+          ? 'Checking your recovery session…'
+          : authorised
+            ? 'Choose a strong password you don’t use elsewhere.'
+            : 'Open this page from the emailed reset link so the request can be authorised.'}
       </p>
       <form onSubmit={submit} className="mt-6 space-y-4">
         <div>
           <Label htmlFor="np" hint={strength}>New password</Label>
-          <Input id="np" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Minimum 8 characters" autoComplete="new-password" />
+          <Input id="np" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Minimum 8 characters" autoComplete="new-password" disabled={!authorised && !loading} />
         </div>
-        <div><Label htmlFor="np2">Confirm password</Label><Input id="np2" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} autoComplete="new-password" /></div>
-        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy}>
+        <div><Label htmlFor="np2">Confirm password</Label><Input id="np2" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} autoComplete="new-password" disabled={!authorised && !loading} /></div>
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy || (!authorised && !loading)}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />} Update password
         </Button>
       </form>
@@ -266,18 +380,46 @@ export const ResetPassword: React.FC = () => {
 };
 
 export const VerifyEmail: React.FC = () => {
-  const { email } = useAuth();
+  const [params] = useSearchParams();
+  const { email, resendVerificationEmail, userId } = useAuth();
+  const [busy, setBusy] = React.useState(false);
+  const displayEmail = email || params.get('email') || 'your inbox';
+
+  const resend = async () => {
+    setBusy(true);
+    // Prefer authenticated resend; fall back to email query param for post-signup.
+    if (userId) {
+      const { error } = await resendVerificationEmail();
+      setBusy(false);
+      if (error) { toast.error(error); return; }
+      toast.success('Verification email resent');
+      return;
+    }
+    const target = params.get('email');
+    if (!target) {
+      setBusy(false);
+      toast.error('Sign in or provide an email to resend verification');
+      return;
+    }
+    const { error } = await supabase.auth.resend({ type: 'signup', email: target });
+    setBusy(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success('Verification email resent');
+  };
+
   return (
     <AuthShell>
       <Card className="p-6 text-center">
         <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-fininfo-soft"><Mail className="h-6 w-6 text-fininfo" /></span>
         <h1 className="mt-4 text-[20px] font-semibold text-navy-900">Verify your email address</h1>
         <p className="mt-2 text-[13px] text-navy-400">
-          We’ve sent a verification link to {email ?? 'your inbox'}. Verification is required before payment sessions can be created.
+          We’ve sent a verification link to {displayEmail}. Open the link to activate your merchant login, then sign in.
         </p>
         <div className="mt-5 space-y-2">
-          <Link to="/dashboard"><Button variant="primary" className="w-full">Continue to dashboard</Button></Link>
-          <Button variant="outline" className="w-full" onClick={() => toast.success('Verification email resent')}>Resend verification email</Button>
+          <Link to="/signin"><Button variant="primary" className="w-full">Return to sign in</Button></Link>
+          <Button variant="outline" className="w-full" disabled={busy} onClick={resend}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Resend verification email
+          </Button>
         </div>
       </Card>
     </AuthShell>
@@ -286,25 +428,47 @@ export const VerifyEmail: React.FC = () => {
 
 export const TwoFactor: React.FC = () => {
   const navigate = useNavigate();
-  const { userId, loading } = useAuth();
+  const location = useLocation();
+  const { userId, loading, needsTwoFactor, completeTwoFactor, profile, signOut } = useAuth();
   const [code, setCode] = React.useState('');
   const [error, setError] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+
+  const redirectTo = (location.state as { from?: string } | null)?.from ?? '/dashboard';
 
   React.useEffect(() => {
-    if (!loading && !userId) navigate('/signin', { replace: true });
-  }, [loading, userId, navigate]);
+    if (loading) return;
+    if (!userId) navigate('/signin', { replace: true });
+    else if (!needsTwoFactor && !profile?.two_factor_enabled) navigate(redirectTo, { replace: true });
+    else if (!needsTwoFactor) navigate(redirectTo, { replace: true });
+  }, [loading, userId, needsTwoFactor, profile?.two_factor_enabled, navigate, redirectTo]);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (code.replace(/\D/g, '').length !== 6) { setError('Enter the 6-digit code from your authenticator app'); return; }
+    if (code.replace(/\D/g, '').length !== 6) {
+      setError('Enter the 6-digit code from your authenticator app');
+      return;
+    }
     setError('');
+    setBusy(true);
+    // Demo TOTP: any 6-digit code verifies the device for this session.
+    // Production must validate against the enrolled authenticator secret server-side.
+    await new Promise((r) => setTimeout(r, 350));
+    completeTwoFactor();
+    setBusy(false);
     toast.success('Device verified');
-    navigate('/dashboard');
+    navigate(redirectTo, { replace: true });
   };
 
   return (
     <AuthShell>
-      <Link to="/dashboard" className="mb-4 inline-flex items-center gap-1.5 text-[13px] text-navy-400 hover:text-navy-900"><ArrowLeft className="h-3.5 w-3.5" /> Back</Link>
+      <button
+        type="button"
+        onClick={async () => { await signOut(); navigate('/signin', { replace: true }); }}
+        className="mb-4 inline-flex items-center gap-1.5 text-[13px] text-navy-400 hover:text-navy-900"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" /> Sign out
+      </button>
       <h1 className="text-[24px] font-semibold text-navy-900">Two-factor authentication</h1>
       <p className="mt-1.5 text-[13.5px] text-navy-400">Enter the 6-digit code from your authenticator app to verify this device.</p>
       <form onSubmit={submit} className="mt-6 space-y-4">
@@ -318,7 +482,9 @@ export const TwoFactor: React.FC = () => {
           />
         </div>
         {error && <p className="rounded-md bg-finerror-soft px-3 py-2 text-[12.5px] text-finerror">{error}</p>}
-        <Button type="submit" variant="primary" size="lg" className="w-full"><ShieldCheck className="h-4 w-4" /> Verify and continue</Button>
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />} Verify and continue
+        </Button>
       </form>
       <Link to="/2fa-setup" className="mt-4 block text-center text-[13px] font-medium text-navy-900 hover:text-gold-600">Set up a new authenticator device</Link>
     </AuthShell>
@@ -327,6 +493,26 @@ export const TwoFactor: React.FC = () => {
 
 export const TwoFactorSetup: React.FC = () => {
   const navigate = useNavigate();
+  const { profile, refreshProfile, completeTwoFactor } = useAuth();
+  const [code, setCode] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+
+  const confirm = async () => {
+    if (code.replace(/\D/g, '').length !== 6) {
+      toast.error('Enter the 6-digit code from your authenticator app');
+      return;
+    }
+    setBusy(true);
+    if (profile?.id) {
+      await supabase.from('merchant_members').update({ two_factor_enabled: true }).eq('id', profile.id);
+      await refreshProfile();
+    }
+    completeTwoFactor();
+    setBusy(false);
+    toast.success('Two-factor authentication enabled');
+    navigate('/dashboard', { replace: true });
+  };
+
   return (
     <AuthShell>
       <h1 className="text-[24px] font-semibold text-navy-900">Set up two-factor authentication</h1>
@@ -341,9 +527,21 @@ export const TwoFactorSetup: React.FC = () => {
           </div>
         </div>
       </Card>
-      <div className="mt-5 space-y-2">
-        <Button variant="primary" className="w-full" onClick={() => { toast.success('Two-factor authentication enabled'); navigate('/2fa'); }}>
-          <CheckCircle2 className="h-4 w-4" /> Confirm setup
+      <div className="mt-5 space-y-3">
+        <div>
+          <Label htmlFor="setup-otp">Confirm with a 6-digit code</Label>
+          <input
+            id="setup-otp"
+            inputMode="numeric"
+            maxLength={6}
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+            placeholder="000000"
+            className="mt-1.5 h-12 w-full rounded-md border border-line bg-white text-center text-[22px] font-semibold tracking-[0.35em] text-navy-900 placeholder:text-navy-300 focus:border-navy-500 focus:outline-none focus:ring-2 focus:ring-navy-900/10"
+          />
+        </div>
+        <Button variant="primary" className="w-full" disabled={busy} onClick={confirm}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} Confirm setup
         </Button>
         <Button variant="outline" className="w-full" onClick={() => navigate('/dashboard')}>Skip for now</Button>
       </div>

@@ -3,15 +3,20 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { AppShell, BackLink, PageHeader } from '@/components/beylo/AppShell';
 import { Badge, Button, Card, CardHeader, CopyButton, Field, Modal, Money, PaymentStatusBadge, SettlementStatusBadge, EmptyState } from '@/components/beylo/primitives';
 import { gbp, dateTime, crypto as fmtCrypto, num, truncateMiddle } from '@/lib/beylo/format';
-import { PAYMENTS, AUDIT_LOGS, MERCHANT } from '@/data/beylo';
+import { AUDIT_LOGS, MERCHANT } from '@/data/beylo';
+import { getPayment, setPaymentStatus } from '@/lib/beylo/ledger';
 import { Check, Circle, Download, XCircle, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 
 const TransactionDetail: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const payment = PAYMENTS.find((p) => p.paymentId === id);
+  const [payment, setPayment] = React.useState(() => (id ? getPayment(id) : undefined));
   const [cancelOpen, setCancelOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    setPayment(id ? getPayment(id) : undefined);
+  }, [id]);
 
   if (!payment) {
     return (
@@ -108,7 +113,7 @@ const TransactionDetail: React.FC = () => {
             <dl className="px-5 py-2">
               <Field label="Customer Name" value={payment.customerName} />
               <Field label="Customer Email" value={payment.customerEmail} />
-              <Field label="Merchant" value={MERCHANT.tradingName} />
+              <Field label="Merchant" value={payment.merchantName || MERCHANT.tradingName} />
             </dl>
           </Card>
 
@@ -152,7 +157,14 @@ const TransactionDetail: React.FC = () => {
         footer={
           <>
             <Button variant="outline" onClick={() => setCancelOpen(false)}>Keep session</Button>
-            <Button variant="danger" onClick={() => { setCancelOpen(false); toast.success('Cancellation requested from provider'); }}>Cancel payment</Button>
+            <Button variant="danger" onClick={() => {
+              if (payment) {
+                setPaymentStatus(payment.paymentId, 'cancelled', {}, 'Cancelled by merchant');
+                setPayment(getPayment(payment.paymentId));
+              }
+              setCancelOpen(false);
+              toast.success('Cancellation requested from provider');
+            }}>Cancel payment</Button>
           </>
         }
       >

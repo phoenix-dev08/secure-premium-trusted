@@ -50,7 +50,7 @@ export interface PaymentProvider {
   readonly mode: 'sandbox' | 'live';
   createPayment(input: CreatePaymentInput): Promise<ProviderPayment>;
   getSupportedAssets(): Promise<CryptoAsset[]>;
-  createQuote(paymentId: string, gbpAmount: number, asset: string): Promise<Quote>;
+  createQuote(paymentId: string, gbpAmount: number, asset: string, network?: string): Promise<Quote>;
   getPaymentInstructions(quote: Quote): Promise<PaymentInstructions>;
   getPaymentStatus(paymentId: string): Promise<{ status: PaymentStatus; confirmations: number }>;
   cancelPayment(paymentId: string): Promise<{ status: PaymentStatus }>;
@@ -95,12 +95,13 @@ class BeyloSandboxProvider implements PaymentProvider {
   async createPayment(input: CreatePaymentInput): Promise<ProviderPayment> {
     await wait(650);
     const paymentId = buildPaymentId();
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://pay.beylo.co.uk';
     return {
       paymentId,
       providerPaymentId: `provider_demo_${Math.floor(Math.random() * 90000) + 10000}`,
       status: 'awaiting_payment',
       settlementCurrency: 'GBP',
-      hostedUrl: `pay.beylo.co.uk/p/${paymentId}`,
+      hostedUrl: `${origin}/pay/${paymentId}`,
       expiresAt: new Date(Date.now() + input.expiryMinutes * 60_000).toISOString(),
     };
   }
@@ -111,9 +112,12 @@ class BeyloSandboxProvider implements PaymentProvider {
     return SANDBOX_ASSETS.filter((a) => a.enabled);
   }
 
-  async createQuote(paymentId: string, gbpAmount: number, asset: string): Promise<Quote> {
+  async createQuote(_paymentId: string, gbpAmount: number, asset: string, network?: string): Promise<Quote> {
     await wait(900);
-    const meta = SANDBOX_ASSETS.find((a) => a.asset === asset) ?? SANDBOX_ASSETS[0];
+    const meta =
+      SANDBOX_ASSETS.find((a) => a.asset === asset && (!network || a.network === network)) ??
+      SANDBOX_ASSETS.find((a) => a.asset === asset) ??
+      SANDBOX_ASSETS[0];
     const base = SANDBOX_RATES[asset] ?? 1;
     // Small jitter simulates a live provider rate refresh.
     const rate = base * (1 + (Math.random() - 0.5) * 0.0025);

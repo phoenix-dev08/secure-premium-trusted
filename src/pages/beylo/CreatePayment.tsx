@@ -16,6 +16,8 @@ import {
 } from '@/components/beylo/primitives';
 import QRCode from '@/components/beylo/QRCode';
 import { paymentProvider, ProviderPayment } from '@/lib/beylo/provider';
+import { savePayment, newTimeline, DEMO_MERCHANT_ID, DEMO_MERCHANT_NAME, appendAudit } from '@/lib/beylo/ledger';
+import { Payment } from '@/lib/beylo/types';
 import { gbp } from '@/lib/beylo/format';
 import { useAuth } from '@/contexts/AuthContext';
 import { Info, Loader2, PlusCircle, ShieldCheck, ExternalLink, Send } from 'lucide-react';
@@ -71,6 +73,39 @@ const CreatePayment: React.FC = () => {
         customerEmail,
         expiryMinutes: expiry,
       });
+
+      const now = new Date().toISOString();
+      const creator = displayName || 'Merchant user';
+      const record: Payment = {
+        paymentId: payment.paymentId,
+        providerPaymentId: payment.providerPaymentId,
+        merchantId: profile?.merchant_id ?? DEMO_MERCHANT_ID,
+        merchantName: profile?.merchant_name ?? DEMO_MERCHANT_NAME,
+        createdAt: now,
+        reference: reference.trim(),
+        description: description.trim() || reference.trim(),
+        customerName: customerName.trim() || undefined,
+        customerEmail: customerEmail.trim() || undefined,
+        gbpAmount: numericAmount,
+        status: 'awaiting_payment',
+        settlementStatus: 'not_started',
+        settlementCurrency: 'GBP',
+        feesGbp: Math.round(numericAmount * 0.003 * 100) / 100,
+        netGbp: Math.round((numericAmount - numericAmount * 0.003) * 100) / 100,
+        createdBy: creator,
+        expiryMinutes: expiry,
+        expiresAt: payment.expiresAt,
+        timeline: newTimeline(creator, now),
+      };
+      savePayment(record);
+      appendAudit({
+        actor: creator,
+        actorRole: profile?.role ?? 'Member',
+        action: 'PAYMENT_CREATED',
+        resource: payment.paymentId,
+        ip: 'browser',
+        result: 'Success',
+      });
       setCreated(payment);
       toast.success('Secure payment created');
     } catch {
@@ -80,8 +115,11 @@ const CreatePayment: React.FC = () => {
     }
   };
 
-  const link = created ? `pay.beylo.co.uk/p/${created.paymentId}` : '';
-  const checkoutPath = created ? `/pay/${created.paymentId}?amount=${numericAmount}&ref=${encodeURIComponent(reference)}&desc=${encodeURIComponent(description)}` : '';
+  const checkoutPath = created ? `/pay/${created.paymentId}` : '';
+  const absoluteLink = created
+    ? (created.hostedUrl.startsWith('http') ? created.hostedUrl : `${window.location.origin}/pay/${created.paymentId}`)
+    : '';
+  const link = absoluteLink.replace(/^https?:\/\//, '');
 
   if (!can('Create Payments')) {
     return (
@@ -100,7 +138,6 @@ const CreatePayment: React.FC = () => {
         description={`Creating as ${displayName}${profile ? ` · ${profile.role}` : ''}`}
         actions={<Button variant="outline" onClick={() => navigate('/dashboard/transactions')}>Transactions</Button>}
       />
-
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <form onSubmit={submit} className="space-y-4 lg:col-span-2">
@@ -208,17 +245,16 @@ const CreatePayment: React.FC = () => {
         </div>
       </div>
 
-      {/* Payment created */}
       <Modal
         open={Boolean(created)}
         onClose={() => setCreated(null)}
         width="max-w-2xl"
         footer={
           <>
-            <Button variant="outline" onClick={() => { setCreated(null); setReference(''); setDescription(''); setAmount(''); }}>
+            <Button variant="outline" onClick={() => { setCreated(null); setReference(''); setDescription(''); setAmount(''); setCustomerName(''); setCustomerEmail(''); }}>
               Create Another Payment
             </Button>
-            <Button variant="primary" onClick={() => navigate('/dashboard/transactions')}>View Payment</Button>
+            <Button variant="primary" onClick={() => created && navigate(`/dashboard/transactions/${created.paymentId}`)}>View Payment</Button>
           </>
         }
       >
@@ -232,7 +268,7 @@ const CreatePayment: React.FC = () => {
 
             <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-[auto_1fr] sm:items-start">
               <div className="flex justify-center">
-                <QRCode value={link} size={170} />
+                <QRCode value={absoluteLink} size={170} />
               </div>
               <div>
                 <dl className="space-y-2.5 text-[13px]">
@@ -246,7 +282,7 @@ const CreatePayment: React.FC = () => {
                   <p className="mt-0.5 break-all font-mono text-[12.5px] text-navy-900">{link}</p>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <CopyButton value={`https://${link}`} label="Copy Payment Link" />
+                  <CopyButton value={absoluteLink} label="Copy Payment Link" />
                   <Button size="sm" variant="primary" onClick={() => navigate(checkoutPath)}>
                     <ExternalLink className="h-3.5 w-3.5" /> Open Checkout
                   </Button>
@@ -265,7 +301,7 @@ const CreatePayment: React.FC = () => {
         onClose={() => setSendOpen(false)}
         defaultEmail={customerEmail}
         defaultName={customerName}
-        link={link}
+        link={absoluteLink || link}
         amount={numericAmount}
       />
     </AppShell>

@@ -83,7 +83,8 @@ const Header: React.FC = () => {
         <div className="hidden items-center gap-2 md:flex">
           <Link to="/docs"><Button variant="ghost" size="sm" className="text-navy-300 hover:bg-white/10 hover:text-white">Documentation</Button></Link>
           <Link to="/signin"><Button variant="outline" size="sm" className="border-white/20 bg-transparent text-white hover:bg-white/10">Sign in</Button></Link>
-          <Link to="/onboarding"><Button variant="gold" size="sm">Open an account</Button></Link>
+          <Link to="/signin?demo=1"><Button variant="gold" size="sm">Try demo</Button></Link>
+          <Link to="/onboarding"><Button variant="ghost" size="sm" className="text-navy-300 hover:bg-white/10 hover:text-white">Open an account</Button></Link>
         </div>
         <button className="rounded-md p-2 text-white md:hidden" onClick={() => setOpen((v) => !v)} aria-label="Toggle menu">
           {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}

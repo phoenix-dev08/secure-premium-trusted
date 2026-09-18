@@ -4,7 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
-import { AuthProvider, RequireAuth, RequireAdmin } from "@/contexts/AuthContext";
+import { AuthProvider, RequireAuth, RequireAdmin, GuestOnly } from "@/contexts/AuthContext";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 
@@ -45,12 +45,12 @@ const App = () => (
               <Route path="/" element={<Index />} />
 
               {/* Authentication */}
-              <Route path="/signin" element={<SignIn />} />
-              <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/signin" element={<GuestOnly><SignIn /></GuestOnly>} />
+              <Route path="/forgot-password" element={<GuestOnly><ForgotPassword /></GuestOnly>} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/verify-email" element={<VerifyEmail />} />
-              <Route path="/2fa" element={<TwoFactor />} />
-              <Route path="/2fa-setup" element={<RequireAuth><TwoFactorSetup /></RequireAuth>} />
+              <Route path="/2fa" element={<RequireAuth allowUnverified2fa><TwoFactor /></RequireAuth>} />
+              <Route path="/2fa-setup" element={<RequireAuth allowUnverified2fa><TwoFactorSetup /></RequireAuth>} />
 
               {/* Merchant onboarding & docs */}
               <Route path="/onboarding" element={<Onboarding />} />

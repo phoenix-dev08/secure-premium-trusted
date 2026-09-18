@@ -3,8 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { AppShell, PageHeader } from '@/components/beylo/AppShell';
 import { Badge, Button, Card, Input, PaymentStatusBadge, SettlementStatusBadge, Select, EmptyState } from '@/components/beylo/primitives';
 import { gbp, dateTime, crypto as fmtCrypto } from '@/lib/beylo/format';
-import { PAYMENTS, TEAM } from '@/data/beylo';
+import { TEAM } from '@/data/beylo';
+import { listAllPayments, useMerchantPayments, DEMO_MERCHANT_ID } from '@/lib/beylo/ledger';
 import { PAYMENT_STATUS_LABEL, SETTLEMENT_STATUS_LABEL, PaymentStatus, SettlementStatus } from '@/lib/beylo/types';
+import { useAuth } from '@/contexts/AuthContext';
 import { Download, Search, SlidersHorizontal, PlusCircle } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -12,6 +14,8 @@ const ASSETS = ['USDC', 'USDT', 'BTC', 'ETH'];
 
 const Transactions: React.FC = () => {
   const navigate = useNavigate();
+  const { profile } = useAuth();
+  const live = useMerchantPayments(profile?.is_platform_admin ? null : profile?.merchant_id);
   const [q, setQ] = React.useState('');
   const [status, setStatus] = React.useState('all');
   const [settlement, setSettlement] = React.useState('all');
@@ -22,7 +26,14 @@ const Transactions: React.FC = () => {
   const [dateFrom, setDateFrom] = React.useState('');
   const [showFilters, setShowFilters] = React.useState(false);
 
-  const rows = PAYMENTS.filter((p) => {
+  const payments = React.useMemo(() => {
+    if (profile?.is_platform_admin) return listAllPayments(null);
+    // Merchant view: live ledger for their merchant + shared demo seed when on demo merchant.
+    if (live.length) return live;
+    return listAllPayments(profile?.merchant_id ?? DEMO_MERCHANT_ID);
+  }, [live, profile?.is_platform_admin, profile?.merchant_id]);
+
+  const rows = payments.filter((p) => {
     const text = `${p.paymentId} ${p.reference} ${p.description} ${p.customerName ?? ''} ${p.customerEmail ?? ''}`.toLowerCase();
     if (q && !text.includes(q.toLowerCase())) return false;
     if (status !== 'all' && p.status !== status) return false;

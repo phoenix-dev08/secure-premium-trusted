@@ -4,7 +4,8 @@ import { AppShell, PageHeader, PermissionDenied } from '@/components/beylo/AppSh
 import { Badge, Button, Card, CardHeader, Field, Input, Label, Modal, Money, Select, EmptyState } from '@/components/beylo/primitives';
 import { VolumeBarChart, AssetDistributionChart } from '@/components/beylo/charts';
 import { gbp, dateTime, num } from '@/lib/beylo/format';
-import { PAYMENTS, MERCHANT, VOLUME_SERIES, AUDIT_LOGS } from '@/data/beylo';
+import { MERCHANT, VOLUME_SERIES, AUDIT_LOGS } from '@/data/beylo';
+import { listAllPayments } from '@/lib/beylo/ledger';
 import { PERMISSIONS, ROLE_PERMISSIONS, TeamRole, INDUSTRIES } from '@/lib/beylo/types';
 import { useAuth, MemberProfile } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
@@ -18,7 +19,7 @@ export const Customers: React.FC = () => {
   const [q, setQ] = React.useState('');
   const grouped = React.useMemo(() => {
     const map = new Map<string, { name: string; email?: string; payments: number; volume: number; last: string }>();
-    PAYMENTS.forEach((p) => {
+    listAllPayments().forEach((p) => {
       const key = p.customerName ?? 'Unattributed';
       const prev = map.get(key);
       map.set(key, {
@@ -94,25 +95,31 @@ export const Team: React.FC = () => {
   const canManageTeam = can('Manage Team');
 
   const load = React.useCallback(async () => {
-    const { data } = await supabase
-      .from('merchant_members')
-      .select('*')
-      .order('created_at', { ascending: true });
+    let query = supabase.from('merchant_members').select('*').order('created_at', { ascending: true });
+    if (profile?.merchant_id) {
+      query = query.eq('merchant_id', profile.merchant_id);
+    }
+    const { data } = await query;
     setMembers((data ?? []) as MemberProfile[]);
     setLoading(false);
-  }, []);
+  }, [profile?.merchant_id]);
 
   React.useEffect(() => { void load(); }, [load]);
 
   const invite = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast.error('Enter a valid work email address'); return; }
+    const normalised = email.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalised)) { toast.error('Enter a valid work email address'); return; }
+    if (members.some((m) => m.email.toLowerCase() === normalised)) {
+      toast.error('That email already has access to this merchant');
+      return;
+    }
     setBusy(true);
 
     const { error } = await supabase.from('merchant_members').insert({
       user_id: null,
-      email: email.trim(),
-      first_name: firstName || email.split('@')[0],
+      email: normalised,
+      first_name: firstName || normalised.split('@')[0],
       last_name: lastName,
       phone: phone || null,
       role,
@@ -389,7 +396,8 @@ export const Reports: React.FC = () => {
 const TABS = ['Business Profile', 'Settlement Details', 'Security', 'Notifications', 'API / Integrations'];
 
 export const SettingsPage: React.FC = () => {
-  const { profile, can, updatePassword } = useAuth();
+  const navigate = useNavigate();
+  const { profile, can, updatePassword, refreshProfile } = useAuth();
   const [tab, setTab] = React.useState(TABS[0]);
   const [notifs, setNotifs] = React.useState<Record<string, boolean>>({
     'Payment Completed': true, 'Payment Failed': true, 'Settlement Completed': true, 'Merchant Verification Updates': true,
@@ -397,6 +405,10 @@ export const SettingsPage: React.FC = () => {
   const [twoFa, setTwoFa] = React.useState(Boolean(profile?.two_factor_enabled));
   const [newPassword, setNewPassword] = React.useState('');
   const canManage = can('Manage Settings');
+
+  React.useEffect(() => {
+    setTwoFa(Boolean(profile?.two_factor_enabled));
+  }, [profile?.two_factor_enabled]);
 
   const savePassword = async () => {
     if (newPassword.length < 8) { toast.error('Password must be at least 8 characters'); return; }
@@ -488,13 +500,20 @@ export const SettingsPage: React.FC = () => {
                 className="mt-4"
                 disabled={!canManage}
                 onClick={async () => {
-                  const next = !twoFa;
+                  if (!twoFa) {
+                    navigate('/2fa-setup');
+                    return;
+                  }
+                  const next = false;
                   setTwoFa(next);
-                  if (profile?.id) await supabase.from('merchant_members').update({ two_factor_enabled: next }).eq('id', profile.id);
-                  toast.success(next ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled');
+                  if (profile?.id) {
+                    await supabase.from('merchant_members').update({ two_factor_enabled: next }).eq('id', profile.id);
+                    await refreshProfile();
+                  }
+                  toast.success('Two-factor authentication disabled');
                 }}
               >
-                <ShieldCheck className="h-4 w-4" /> {twoFa ? 'Manage 2FA' : 'Enable 2FA'}
+                <ShieldCheck className="h-4 w-4" /> {twoFa ? 'Disable 2FA' : 'Enable 2FA'}
               </Button>
               {!canManage && <p className="mt-2 text-[12px] text-navy-400">Your role cannot change security settings.</p>}
             </div>

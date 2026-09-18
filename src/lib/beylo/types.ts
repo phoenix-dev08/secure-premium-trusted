@@ -84,6 +84,10 @@ export interface Payment {
   netGbp?: number;
   createdBy: string;
   expiryMinutes: number;
+  expiresAt?: string;
+  failReason?: string;
+  quote?: Quote;
+  instructions?: PaymentInstructions;
   timeline: TimelineEvent[];
   txHash?: string;
 }

@@ -2,6 +2,8 @@ import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Badge, BeyloLogo, Button, Card, Input, Label, Select } from '@/components/beylo/primitives';
 import { AMOUNT_BANDS, INDUSTRIES } from '@/lib/beylo/types';
+import { buildMerchantId } from '@/lib/beylo/ledger';
+import { saveOnboardingDraft } from '@/contexts/AuthContext';
 import { Check, ChevronLeft, ChevronRight, Loader2, Lock, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -62,6 +64,11 @@ const Onboarding: React.FC = () => {
     if (!validate()) return;
     if (step === 4) {
       setSubmitting(true);
+      const merchantId = buildMerchantId();
+      saveOnboardingDraft({
+        ...form,
+        merchantId,
+      });
       await fetch('https://famous.ai/api/crm/6aace01560554da1d744b64f/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -233,7 +240,13 @@ const Onboarding: React.FC = () => {
                 </div>
 
                 <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-                  <Button variant="gold" size="lg" onClick={() => navigate('/dashboard')}>Continue to dashboard</Button>
+                  <Button
+                    variant="gold"
+                    size="lg"
+                    onClick={() => navigate(`/signin?mode=register&from=onboarding`)}
+                  >
+                    Create your merchant login
+                  </Button>
                   <Button variant="outline" size="lg" onClick={() => navigate('/signin')}>Back to sign in</Button>
                 </div>
               </div>

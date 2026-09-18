@@ -4,7 +4,8 @@ import { AppShell, PageHeader } from '@/components/beylo/AppShell';
 import { Badge, Button, Card, CardHeader, Money, PaymentStatusBadge, SettlementStatusBadge } from '@/components/beylo/primitives';
 import { VolumeAreaChart, AssetDistributionChart } from '@/components/beylo/charts';
 import { gbp, dateTime, crypto as fmtCrypto } from '@/lib/beylo/format';
-import { PAYMENTS, VOLUME_SERIES, SETTLEMENTS } from '@/data/beylo';
+import { VOLUME_SERIES, SETTLEMENTS } from '@/data/beylo';
+import { listAllPayments, useMerchantPayments } from '@/lib/beylo/ledger';
 import { useAuth } from '@/contexts/AuthContext';
 import { ArrowUpRight, PlusCircle, TrendingUp, Wallet, CheckCircle2, Clock3 } from 'lucide-react';
 
@@ -50,10 +51,16 @@ const Dashboard: React.FC = () => {
   const [range, setRange] = React.useState('30d');
   const navigate = useNavigate();
   const { profile, displayName, can } = useAuth();
-  const recent = PAYMENTS.slice(0, 6);
+  const payments = useMerchantPayments(profile?.is_platform_admin ? undefined : profile?.merchant_id);
+  const scoped = profile?.is_platform_admin
+    ? listAllPayments()
+    : payments;
+  const recent = scoped.slice(0, 6);
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening';
   const pendingSettlement = SETTLEMENTS.filter((s) => s.status === 'settlement_pending').reduce((a, s) => a + s.netGbp, 0);
   const firstName = profile?.first_name || displayName.split(' ')[0] || 'there';
+  const successful = scoped.filter((p) => p.status === 'completed' || p.status === 'confirmed');
+  const volume = successful.reduce((sum, p) => sum + p.gbpAmount, 0);
 
   return (
     <AppShell title="Payment activity overview">
@@ -75,10 +82,10 @@ const Dashboard: React.FC = () => {
 
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Total Payment Volume" value={gbp(428750)} change="+12.4%" note="vs previous period" icon={Wallet} accent />
-        <KpiCard label="Successful Payments" value="24" change="+4" note="vs previous period" icon={CheckCircle2} />
-        <KpiCard label="Awaiting Settlement" value={gbp(pendingSettlement || 72500)} note="2 settlements queued" icon={Clock3} />
-        <KpiCard label="Settled This Month" value={gbp(356250)} change="+8.1%" note="Faster Payments" icon={ArrowUpRight} />
+        <KpiCard label="Total Payment Volume" value={gbp(volume || 0)} note={`${successful.length} confirmed payments`} icon={Wallet} accent />
+        <KpiCard label="Successful Payments" value={String(successful.length)} note="Completed or confirmed" icon={CheckCircle2} />
+        <KpiCard label="Awaiting Settlement" value={gbp(pendingSettlement || scoped.filter((p) => p.settlementStatus === 'settlement_pending').reduce((a, p) => a + (p.netGbp ?? p.gbpAmount), 0))} note="Queued GBP payouts" icon={Clock3} />
+        <KpiCard label="Settled This Month" value={gbp(scoped.filter((p) => p.settlementStatus === 'settled').reduce((a, p) => a + (p.netGbp ?? 0), 0))} note="Faster Payments" icon={ArrowUpRight} />
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
